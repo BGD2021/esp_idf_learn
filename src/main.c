@@ -19,10 +19,16 @@
 #include "esp_tls.h"
 #include "esp_log.h"
 
+
 #define SSID "BGD"
 #define PSW "123456bgd"
 
-void wifi_init_softap(void){
+
+int MIN(int a, int b) {
+    return a < b ? a : b;
+}
+
+esp_netif_t* wifi_init_softap(void){
     //Initialize NVS
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -33,7 +39,7 @@ void wifi_init_softap(void){
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_ap();
+    esp_netif_t* esp_netif_ap = esp_netif_create_default_wifi_ap();
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     wifi_config_t wifi_config = {
@@ -48,7 +54,7 @@ void wifi_init_softap(void){
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_AP, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
-
+    return esp_netif_ap;
 }
 
 esp_netif_t* wifi_init_sta(void){
@@ -86,37 +92,110 @@ esp_netif_t* wifi_init_sta(void){
     return esp_netif_sta;
 }
 
+static esp_err_t index_html_handler(httpd_req_t *req){
+
+
+    const char* html = "<html>\
+  <head>\
+    <meta http-equiv='refresh' content='5'/>\
+    <title>ESP32 Demo</title>\
+    <style>\
+      body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+    </style>\
+  </head>\
+  <body>\
+    <h1>Hello from ESP32!</h1>\
+    <h3>CO2:  </h3>\
+    <h3>TVOC:  </h3>\
+    <h3>max_CO2:  </h3>\
+  </body>\
+</html>";
+    httpd_resp_send(req, html, strlen(html));
+    return ESP_OK;
+}
+
 static esp_err_t hello_get_handler(httpd_req_t *req){
     httpd_resp_send(req, "Hello World!", 13);
     return ESP_OK;
 }
 
-static const httpd_uri_t hello = {
-    .uri       = "/hello",
-    .method    = HTTP_GET,
-    .handler   = hello_get_handler,
-    .user_ctx  = NULL
-};
+static esp_err_t echo_post_handler(httpd_req_t *req)
+{
+    char buf[100];
+    int ret, remaining = req->content_len;
+
+    while (remaining > 0) {
+        /* Read the data for the request */
+        if ((ret = httpd_req_recv(req, buf,
+                        MIN(remaining, sizeof(buf)))) <= 0) {
+            if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+                /* Retry receiving if timeout occurred */
+                continue;
+            }
+            return ESP_FAIL;
+        }
+
+        /* Send back the same data */
+        httpd_resp_send_chunk(req, buf, ret);
+        remaining -= ret;
+
+        /* Log data received */
+        ESP_LOGI("TAG", "=========== RECEIVED DATA ==========");
+        ESP_LOGI("TAG", "%.*s", ret, buf);
+        ESP_LOGI("TAG", "====================================");
+    }
+
+    // End response
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
 
 
-static httpd_handle_t start_webserver(void){
 
-    //启动wifi
-    wifi_init_sta();
-
+static httpd_handle_t start_webserver(void)
+{
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.lru_purge_enable = true;
-    ESP_LOGI("httpd", "Starting server on port: '%d'", config.server_port);
-    if(httpd_start(&server, &config) == ESP_OK){
+
+    // Start the httpd server
+    ESP_LOGI("TAG", "Starting server on port: '%d'", config.server_port);
+    if (httpd_start(&server, &config) == ESP_OK) {
+        // Set URI handlers
+        ESP_LOGI("TAG", "Registering URI handlers");
+        
+    
+        static const httpd_uri_t echo = {
+            .uri       = "/echo",
+            .method    = HTTP_POST,
+            .handler   = echo_post_handler,
+            .user_ctx  = NULL
+        };
+
+        static const httpd_uri_t hello = {
+            .uri       = "/hello",
+            .method    = HTTP_GET,
+            .handler   = hello_get_handler,
+            .user_ctx  = NULL
+        };
+
+        static const httpd_uri_t index_html = {
+            .uri       = "/",
+            .method    = HTTP_GET,
+            .handler   = index_html_handler,
+            .user_ctx  = NULL
+        };
+
+
         httpd_register_uri_handler(server, &hello);
+        httpd_register_uri_handler(server, &index_html);
+        httpd_register_uri_handler(server, &echo);
         return server;
     }
-    ESP_LOGI("httpd", "Error starting server!");
+
+    ESP_LOGI("TAG", "Error starting server!");
     return NULL;
-
 }
-
 
 
 void callback(void)
@@ -136,7 +215,6 @@ void LED_task(void *arg)
 
 
 void app_main() {
-    int i=0;
     uint32_t ret;
     //初始化串口0
     uart_init(0,115200);
@@ -198,23 +276,24 @@ void app_main() {
 
     //wifi
     // wifi_init_softap();
-    esp_netif_t *esp_netif_sta = wifi_init_sta();
-    esp_netif_set_default_netif(esp_netif_sta);
-
+    // esp_netif_t *esp_netif_sta = wifi_init_sta();
+    esp_netif_t *esp_netif_ap = wifi_init_softap();
+    esp_netif_set_default_netif(esp_netif_ap);
     //httpd
-    // httpd_handle_t server = start_webserver();
+    static httpd_handle_t server = NULL;
+    server = start_webserver();
 
     /*创建LED闪烁任务*/
     xTaskCreate(LED_task, "LED_task", 1024, NULL, 10, NULL);
     /*创建软件定时器*/
     TimerHandle_t timer = xTimerCreate("hello_world", 100, pdTRUE, NULL, callback);
-    xTimerStart(timer, 1000/portTICK_PERIOD_MS);
+    // xTimerStart(timer, 1000/portTICK_PERIOD_MS);
     //循环发送数据
     while (1) {
 
         /*单次转换ADC*/
         adc_oneshot_read(adc1_handle,ADC1_CHANNEL_7,&ret);
-        printf_uart(0,"adc_data:%d\r\n",ret);
+        // printf_uart(0,"adc_data:%d\r\n",ret);
         /*连续转换ADC*/
         // adc_continuous_read(adc_handle, adc_data, 256,&ret, ADC_MAX_DELAY);
         
