@@ -18,7 +18,11 @@
 #include "esp_http_server.h"
 #include "esp_tls.h"
 #include "esp_log.h"
-
+#include "esp_flash.h"
+#include "esp_partition.h"
+#include "esp_vfs.h"
+#include "esp_vfs_fat.h"
+#include "esp_flash_spi_init.h"
 
 #define SSID "BGD"
 #define PSW "123456bgd"
@@ -150,8 +154,6 @@ static esp_err_t echo_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-
-
 static httpd_handle_t start_webserver(void)
 {
     httpd_handle_t server = NULL;
@@ -197,11 +199,12 @@ static httpd_handle_t start_webserver(void)
     return NULL;
 }
 
-
+//串口回调函数
 void callback(void)
 {
     uart_print(0,"hello world\r\n");
 }
+//LED闪烁任务
 void LED_task(void *arg)
 {
     for(;;)
@@ -212,6 +215,26 @@ void LED_task(void *arg)
         vTaskDelay(100);
     }
 }
+
+//初始化外置flash
+esp_flash_t * flash_init(void){
+    const spi_bus_config_t bus_config = {
+        .mosi_io_num = 23,
+        .miso_io_num = 19,
+        .sclk_io_num = 18,
+        .quadwp_io_num = 22,
+        .quadhd_io_num = 21,
+    };
+    const esp_flash_spi_device_config_t device_config = {
+        .host_id = SPI2_HOST,
+        .cs_id = 0,
+        .cs_io_num = 5,
+        .io_mode = SPI_FLASH_DIO,
+        .freq_mhz = 40,
+    };
+    ESP_LOGI("TAG", "Initializing external SPI Flash...");
+        
+}   
 
 
 void app_main() {
